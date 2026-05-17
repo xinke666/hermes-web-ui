@@ -249,7 +249,7 @@ test('surfaces an empty completed run as an error instead of leaving chat stalle
 
 test('renders tool trace and sends explicit approval decisions over the chat-run socket', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
-  const api = await mockHermesApi(page, { showToolTrace: true })
+  const api = await mockHermesApi(page)
   await mockChatSocket(page)
 
   await page.goto('/#/hermes/chat')
@@ -371,7 +371,7 @@ test('renders tool trace and sends explicit approval decisions over the chat-run
 
 test('keeps prior tool trace visible while hiding only the active run tool trace', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
-  const api = await mockHermesApi(page, { showToolTrace: true })
+  const api = await mockHermesApi(page)
   await mockChatSocket(page)
 
   await page.goto('/#/hermes/chat')
@@ -474,7 +474,7 @@ test('keeps prior tool trace visible while hiding only the active run tool trace
 
 test('keeps completed same-run tool traces hidden until the run finishes', async ({ page }) => {
   await authenticate(page, TEST_ACCESS_KEY, 'research')
-  const api = await mockHermesApi(page, { showToolTrace: true })
+  const api = await mockHermesApi(page)
   await mockChatSocket(page)
 
   await page.goto('/#/hermes/chat')
@@ -806,7 +806,7 @@ test('restores named resumed tool traces from assistant tool calls after session
       },
     }
   }, sessionId)
-  const api = await mockHermesApi(page, { sessions: [sessionSummary], showToolTrace: true })
+  const api = await mockHermesApi(page, { sessions: [sessionSummary] })
   await mockChatSocket(page)
 
   await page.goto('/#/hermes/chat')

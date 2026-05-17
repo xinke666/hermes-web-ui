@@ -46,9 +46,6 @@ function handleThemeChange(val: string) {
     <SettingRow :label="t('settings.display.showReasoning')" :hint="t('settings.display.showReasoningHint')">
       <NSwitch :value="settingsStore.display.show_reasoning" @update:value="v => save({ show_reasoning: v })" />
     </SettingRow>
-    <SettingRow :label="t('settings.display.showToolTrace')" :hint="t('settings.display.showToolTraceHint')">
-      <NSwitch :value="settingsStore.display.show_tool_trace" @update:value="v => save({ show_tool_trace: v })" />
-    </SettingRow>
     <SettingRow :label="t('settings.display.showCost')" :hint="t('settings.display.showCostHint')">
       <NSwitch :value="settingsStore.display.show_cost" @update:value="v => save({ show_cost: v })" />
     </SettingRow>

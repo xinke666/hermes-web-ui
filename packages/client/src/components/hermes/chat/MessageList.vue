@@ -3,15 +3,15 @@ import { ref, computed, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import MessageItem from "./MessageItem.vue";
 import { useChatStore } from "@/stores/hermes/chat";
-import { useSettingsStore } from "@/stores/hermes/settings";
 import thinkingVideoLight from "@/assets/thinking-light.mp4";
 import thinkingVideoDark from "@/assets/thinking-dark.mp4";
 import { useTheme } from "@/composables/useTheme";
+import { useToolTraceVisibility } from "@/composables/useToolTraceVisibility";
 
 const chatStore = useChatStore();
-const settingsStore = useSettingsStore();
 const { t } = useI18n();
 const { isDark } = useTheme();
+const { toolTraceVisible } = useToolTraceVisibility();
 const listRef = ref<HTMLElement>();
 
 function formatTokens(n: number): string {
@@ -44,17 +44,14 @@ const currentToolCalls = computed(() => {
 });
 
 const visibleToolCalls = computed(() =>
-  settingsStore.display.show_tool_trace
-    ? currentToolCalls.value.filter((tool) => !!tool.toolName)
-    : [],
+  toolTraceVisible.value ? currentToolCalls.value.filter((tool) => !!tool.toolName) : [],
 );
 
 const displayMessages = computed(() => {
   const currentToolIds = new Set(currentToolCalls.value.map((tool) => tool.id));
-  const showToolTrace = !!settingsStore.display.show_tool_trace;
   return chatStore.messages.filter((m) => {
     if (m.role === "tool") {
-      return showToolTrace && !!m.toolName && !(chatStore.isRunActive && currentToolIds.has(m.id));
+      return toolTraceVisible.value && !!m.toolName && !(chatStore.isRunActive && currentToolIds.has(m.id));
     }
     if (
       m.role === "assistant" &&

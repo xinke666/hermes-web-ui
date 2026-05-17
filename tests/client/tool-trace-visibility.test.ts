@@ -17,7 +17,7 @@ vi.mock('@/composables/useTheme', () => ({
 import MessageList from '@/components/hermes/chat/MessageList.vue'
 import HistoryMessageList from '@/components/hermes/chat/HistoryMessageList.vue'
 import { useChatStore, type Message, type Session } from '@/stores/hermes/chat'
-import { useSettingsStore } from '@/stores/hermes/settings'
+import { useToolTraceVisibility } from '@/composables/useToolTraceVisibility'
 
 const MessageItemStub = defineComponent({
   name: 'MessageItem',
@@ -45,18 +45,18 @@ const sampleMessages: Message[] = [
   { id: 'assistant-1', role: 'assistant', content: 'done', timestamp: 4 },
 ]
 
-describe('tool trace visibility setting', () => {
+describe('tool trace visibility', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.removeItem('hermes_show_tool_calls')
+    useToolTraceVisibility().setToolTraceVisible(true)
   })
 
-  function mountLiveList(showToolTrace?: boolean) {
+  function mountLiveList() {
     const chatStore = useChatStore()
-    const settingsStore = useSettingsStore()
     chatStore.activeSessionId = 'session-1'
     chatStore.activeSession = makeSession(sampleMessages)
     chatStore.abortState = { aborting: true, synced: false }
-    settingsStore.display = showToolTrace === undefined ? {} : { show_tool_trace: showToolTrace }
 
     return mount(MessageList, {
       global: {
@@ -68,18 +68,8 @@ describe('tool trace visibility setting', () => {
     })
   }
 
-  it('hides transcript and live tool traces by default', () => {
+  it('shows named transcript and live tool traces by default while keeping unnamed internal tools hidden', () => {
     const wrapper = mountLiveList()
-
-    expect(wrapper.findAll('.stub-message').map(node => node.attributes('data-id'))).toEqual([
-      'user-1',
-      'assistant-1',
-    ])
-    expect(wrapper.findAll('.tool-call-name').map(node => node.text())).not.toContain('read_file')
-  })
-
-  it('shows named transcript and live tool traces when enabled while keeping unnamed internal tools hidden', () => {
-    const wrapper = mountLiveList(true)
 
     expect(wrapper.findAll('.stub-message').map(node => node.attributes('data-id'))).toEqual([
       'user-1',
@@ -89,27 +79,7 @@ describe('tool trace visibility setting', () => {
     expect(wrapper.findAll('.tool-call-name').map(node => node.text())).toContain('read_file')
   })
 
-  it('applies the same default-hidden rule to history sessions', () => {
-    const settingsStore = useSettingsStore()
-    settingsStore.display = {}
-
-    const wrapper = mount(HistoryMessageList, {
-      props: { session: makeSession(sampleMessages) },
-      global: {
-        stubs: { MessageItem: MessageItemStub },
-      },
-    })
-
-    expect(wrapper.findAll('.stub-message').map(node => node.attributes('data-id'))).toEqual([
-      'user-1',
-      'assistant-1',
-    ])
-  })
-
-  it('shows named history tool traces when enabled', () => {
-    const settingsStore = useSettingsStore()
-    settingsStore.display = { show_tool_trace: true }
-
+  it('applies the same default-visible rule to history sessions', () => {
     const wrapper = mount(HistoryMessageList, {
       props: { session: makeSession(sampleMessages) },
       global: {
@@ -120,6 +90,28 @@ describe('tool trace visibility setting', () => {
     expect(wrapper.findAll('.stub-message').map(node => node.attributes('data-id'))).toEqual([
       'user-1',
       'tool-named',
+      'assistant-1',
+    ])
+  })
+
+  it('hides named live and history tool traces when the localStorage toggle is off', () => {
+    useToolTraceVisibility().setToolTraceVisible(false)
+
+    const liveWrapper = mountLiveList()
+    expect(liveWrapper.findAll('.stub-message').map(node => node.attributes('data-id'))).toEqual([
+      'user-1',
+      'assistant-1',
+    ])
+    expect(liveWrapper.findAll('.tool-call-name').map(node => node.text())).not.toContain('read_file')
+
+    const historyWrapper = mount(HistoryMessageList, {
+      props: { session: makeSession(sampleMessages) },
+      global: {
+        stubs: { MessageItem: MessageItemStub },
+      },
+    })
+    expect(historyWrapper.findAll('.stub-message').map(node => node.attributes('data-id'))).toEqual([
+      'user-1',
       'assistant-1',
     ])
   })
