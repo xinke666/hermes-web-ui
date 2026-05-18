@@ -21,6 +21,7 @@ import { setChatRunServer } from './routes/hermes/chat-run'
 import { GroupChatServer } from './services/hermes/group-chat'
 import { ChatRunSocket } from './services/hermes/run-chat'
 import { startAgentBridgeManager } from './services/hermes/agent-bridge'
+import { HermesSkillInjector } from './services/hermes/skill-injector'
 import { logger } from './services/logger'
 
 // Injected by esbuild at build time; fallback to reading package.json in dev mode
@@ -88,6 +89,16 @@ export async function bootstrap() {
 
   const authToken = await getToken()
   await initLoginLimiter()
+  try {
+    const skillInjector = new HermesSkillInjector()
+    const injectionResult = await skillInjector.injectMissingSkills()
+    if (injectionResult.injected.length > 0) {
+      console.log('[bootstrap] bundled skills injected:', injectionResult.injected.join(', '))
+    }
+  } catch (err) {
+    logger.warn(err, '[bootstrap] failed to inject bundled skills')
+    console.warn('[bootstrap] failed to inject bundled skills:', err instanceof Error ? err.message : err)
+  }
 
   // Debug: log environment variable
   console.log('[bootstrap] HERMES_WEB_UI_STOP_GATEWAYS_ON_SHUTDOWN =', process.env.HERMES_WEB_UI_STOP_GATEWAYS_ON_SHUTDOWN)
