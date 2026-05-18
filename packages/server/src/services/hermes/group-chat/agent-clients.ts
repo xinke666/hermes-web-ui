@@ -1,6 +1,5 @@
 import { io, Socket } from 'socket.io-client'
 import { getToken } from '../../../services/auth'
-import type { GatewayManager } from '../gateway-manager'
 import { logger } from '../../../services/logger'
 import { updateUsage } from '../../../db/hermes/usage-store'
 import { AgentBridgeClient, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
@@ -66,7 +65,6 @@ class AgentClient {
     private joinedRooms = new Set<string>()
     private handlers: AgentEventHandler
     private _reconnecting = false
-    private gatewayManager: GatewayManager | null = null
     private contextEngine: any = null
     private storage: any = null
     private pendingToolCallIds = new Map<string, string[]>()
@@ -86,10 +84,6 @@ class AgentClient {
 
     get id(): string | undefined {
         return this.socket?.id
-    }
-
-    setGatewayManager(manager: GatewayManager): void {
-        this.gatewayManager = manager
     }
 
     setContextEngine(engine: any): void {
@@ -636,7 +630,6 @@ function recordBridgeUsage(roomId: string, profile: string, result: unknown): vo
 
 export class AgentClients {
     private rooms = new Map<string, Map<string, AgentClient>>()
-    private _gatewayManager: GatewayManager | null = null
     private _contextEngine: any = null
     private _storage: any = null
 
@@ -653,7 +646,6 @@ export class AgentClients {
         await client.connect(port)
 
         // Auto-apply stored references (fixes propagation for agents created after set*)
-        if (this._gatewayManager) client.setGatewayManager(this._gatewayManager)
         if (this._contextEngine) client.setContextEngine(this._contextEngine)
         if (this._storage) client.setStorage(this._storage)
 
@@ -783,16 +775,6 @@ export class AgentClients {
         })
         this.rooms.clear()
         logger.info('[AgentClients] All agents disconnected')
-    }
-
-    /**
-     * Set gateway manager for all existing and future agents.
-     */
-    setGatewayManager(manager: GatewayManager): void {
-        this._gatewayManager = manager
-        this.rooms.forEach((room) => {
-            room.forEach((client) => client.setGatewayManager(manager))
-        })
     }
 
     /**

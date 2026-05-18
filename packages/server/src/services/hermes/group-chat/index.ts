@@ -617,13 +617,6 @@ export class GroupChatServer {
     /** roomId -> (agentName -> { agentName, status }) */
     private contextStatusState = new Map<string, Map<string, { agentName: string; status: string }>>()
 
-    setGatewayManager(manager: any): void {
-        this.agentClients.setGatewayManager(manager)
-        if (this._contextEngine && manager) {
-            this._contextEngine.setUpstream(manager.getUpstream(''), manager.getApiKey(''))
-        }
-    }
-
     constructor(httpServers: HttpServer | HttpServer[]) {
         this.storage = new ChatStorage()
         this.storage.init()

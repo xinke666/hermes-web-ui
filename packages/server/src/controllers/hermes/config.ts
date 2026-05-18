@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
 import { getActiveConfigPath, getActiveEnvPath } from '../../services/hermes/hermes-profile'
+import { AgentBridgeClient } from '../../services/hermes/agent-bridge'
 import { saveEnvValue } from '../../services/config-helpers'
 import { logger } from '../../services/logger'
 import { safeFileStore } from '../../services/safe-file-store'
@@ -78,6 +79,15 @@ function deepMerge(target: Record<string, any>, source: Record<string, any>): Re
   return target
 }
 
+async function destroyBridgeProfile(profile: string): Promise<void> {
+  try {
+    const result = await new AgentBridgeClient().destroyProfile(profile)
+    logger.info('[config] destroyed bridge sessions after gateway restart profile=%s destroyed=%s', profile, result.destroyed)
+  } catch (err) {
+    logger.warn(err, '[config] failed to destroy bridge sessions after gateway restart profile=%s', profile)
+  }
+}
+
 async function readEnvPlatforms(): Promise<Record<string, any>> {
   try {
     const raw = await readFile(envPath(), 'utf-8')
@@ -150,6 +160,7 @@ export async function updateConfig(ctx: any) {
           const activeProfile = mgr.getActiveProfile()
           await mgr.stop(activeProfile)
           await mgr.start(activeProfile)
+          await destroyBridgeProfile(activeProfile)
         } catch (err) {
           logger.error(err, 'GatewayManager restart failed')
         }
@@ -215,6 +226,7 @@ export async function updateCredentials(ctx: any) {
         const activeProfile = mgr.getActiveProfile()
         await mgr.stop(activeProfile)
         await mgr.start(activeProfile)
+        await destroyBridgeProfile(activeProfile)
       } catch (err) {
         logger.error(err, 'GatewayManager restart failed')
       }

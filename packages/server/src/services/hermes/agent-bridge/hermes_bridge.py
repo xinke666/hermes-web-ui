@@ -1830,6 +1830,26 @@ class BridgeBroker:
                     pass
             return {"destroyed": destroyed}
 
+        if action == "destroy_profile":
+            profile = self._normalize_profile(req.get("profile"))
+            with self._lock:
+                worker = self._workers.get(profile)
+                self._run_profile = {key: value for key, value in self._run_profile.items() if value != profile}
+                self._session_profile = {key: value for key, value in self._session_profile.items() if value != profile}
+                self._approval_profile = {key: value for key, value in self._approval_profile.items() if value != profile}
+                self._compression_profile = {key: value for key, value in self._compression_profile.items() if value != profile}
+
+            if worker is None or not worker.running:
+                if worker is not None:
+                    worker.stop()
+                return {"profile": profile, "destroyed": 0}
+
+            try:
+                resp = worker.request({"action": "destroy_all"})
+                return {"profile": profile, "destroyed": int(resp.get("destroyed") or 0)}
+            except Exception:
+                return {"profile": profile, "destroyed": 0}
+
         if action == "list":
             sessions: list[Any] = []
             with self._lock:

@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import * as hermesCli from '../../services/hermes/hermes-cli'
 import { SessionDeleter } from '../../services/hermes/session-deleter'
 import { getGatewayManagerInstance } from '../../services/gateway-bootstrap'
+import { AgentBridgeClient } from '../../services/hermes/agent-bridge'
 import { logger } from '../../services/logger'
 import { smartCloneCleanup } from '../../services/hermes/profile-credentials'
 import { detectHermesRootHome } from '../../services/hermes/hermes-path'
@@ -225,6 +226,12 @@ export async function remove(ctx: any) {
   try {
     const mgr = getGatewayManagerInstance()
     if (mgr) { try { await mgr.stop(name) } catch { } }
+    try {
+      const result = await new AgentBridgeClient().destroyProfile(name)
+      logger.info('[profiles] destroyed bridge sessions for deleted profile "%s" destroyed=%s', name, result.destroyed)
+    } catch (err) {
+      logger.warn(err, '[profiles] failed to destroy bridge sessions for deleted profile "%s"', name)
+    }
     const ok = await hermesCli.deleteProfile(name)
     if (ok) {
       ctx.body = { success: true }
