@@ -12,7 +12,7 @@ import type { Server, Socket } from 'socket.io'
 import { logger } from '../../logger'
 import { getSystemPrompt } from '../../../lib/llm-prompt'
 import { getSession } from '../../../db/hermes/session-store'
-import { getActiveProfileName, getProfileDir } from '../hermes-profile'
+import { getActiveProfileName, getProfileDir, listProfileNamesFromDisk } from '../hermes-profile'
 import { AgentBridgeClient } from '../agent-bridge'
 import { handleApiRun, resolveRunSource, loadSessionStateFromDb } from './handle-api-run'
 import { handleBridgeRun } from './handle-bridge-run'
@@ -60,7 +60,7 @@ export class ChatRunSocket {
     const currentProfile = () => getActiveProfileName() || socketProfile || 'default'
     const profileExists = (profile: string) => {
       if (!profile || profile === 'default') return true
-      return getProfileDir(profile).endsWith(`/profiles/${profile}`)
+      return listProfileNamesFromDisk().includes(profile)
     }
     const resolveRunProfile = (sessionId?: string, requested?: string) => {
       const requestedProfile = typeof requested === 'string' ? requested.trim() : ''
