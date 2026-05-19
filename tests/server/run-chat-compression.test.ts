@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const getSessionDetailMock = vi.fn()
 const getSessionMock = vi.fn()
 const getCompressionSnapshotMock = vi.fn()
+const deleteCompressionSnapshotMock = vi.fn()
 const getModelContextLengthMock = vi.fn()
 const calcAndUpdateUsageMock = vi.fn()
+const estimateUsageTokensFromMessagesMock = vi.fn()
 const compressorCompressMock = vi.fn()
 const readConfigYamlForProfileMock = vi.fn()
 const compressorConstructorMock = vi.fn()
@@ -16,6 +18,7 @@ vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
 
 vi.mock('../../packages/server/src/db/hermes/compression-snapshot', () => ({
   getCompressionSnapshot: getCompressionSnapshotMock,
+  deleteCompressionSnapshot: deleteCompressionSnapshotMock,
 }))
 
 vi.mock('../../packages/server/src/lib/context-compressor', () => ({
@@ -53,7 +56,7 @@ vi.mock('../../packages/server/src/services/logger', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/usage', () => ({
   calcAndUpdateUsage: calcAndUpdateUsageMock,
-  estimateUsageTokensFromMessages: vi.fn(() => ({ inputTokens: 0, outputTokens: 0 })),
+  estimateUsageTokensFromMessages: estimateUsageTokensFromMessagesMock,
 }))
 
 vi.mock('../../packages/server/src/services/hermes/run-chat/message-format', () => ({
@@ -65,8 +68,10 @@ describe('run chat compression trigger', () => {
     getSessionDetailMock.mockReset()
     getSessionMock.mockReset()
     getCompressionSnapshotMock.mockReset()
+    deleteCompressionSnapshotMock.mockReset()
     getModelContextLengthMock.mockReset()
     calcAndUpdateUsageMock.mockReset()
+    estimateUsageTokensFromMessagesMock.mockReset()
     compressorCompressMock.mockReset()
     compressorConstructorMock.mockReset()
     readConfigYamlForProfileMock.mockReset()
@@ -74,6 +79,7 @@ describe('run chat compression trigger', () => {
     getSessionMock.mockReturnValue({ id: 'session-1', profile: 'default' })
     getModelContextLengthMock.mockReturnValue(200_000)
     calcAndUpdateUsageMock.mockResolvedValue({ inputTokens: 1_000, outputTokens: 0 })
+    estimateUsageTokensFromMessagesMock.mockReturnValue({ inputTokens: 0, outputTokens: 0 })
     getCompressionSnapshotMock.mockReturnValue(null)
     readConfigYamlForProfileMock.mockResolvedValue({})
   })
@@ -208,6 +214,60 @@ describe('run chat compression trigger', () => {
       },
     })
     expect(compressorCompressMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rebuilds compression from full history when snapshot index is stale', async () => {
+    const messages = Array.from({ length: 10 }, (_, index) => ({
+      id: index + 1,
+      session_id: 'session-1',
+      role: index === 9 ? 'user' : index % 2 === 0 ? 'user' : 'assistant',
+      content: `message ${index}`,
+      timestamp: index + 1,
+      tool_call_id: null,
+      tool_calls: null,
+      tool_name: null,
+      finish_reason: null,
+      reasoning_content: null,
+    }))
+    getSessionDetailMock.mockReturnValue({ messages })
+    getCompressionSnapshotMock.mockReturnValue({
+      summary: 'old summary',
+      lastMessageIndex: 99,
+      messageCountAtTime: 100,
+    })
+    calcAndUpdateUsageMock.mockResolvedValue({ inputTokens: 1_000, outputTokens: 0 })
+    estimateUsageTokensFromMessagesMock.mockReturnValue({ inputTokens: 120_000, outputTokens: 0 })
+    compressorCompressMock.mockResolvedValue({
+      messages: [{ role: 'user', content: 'rebuilt compressed' }],
+      meta: {
+        compressed: true,
+        llmCompressed: true,
+        totalMessages: 9,
+        summaryTokenEstimate: 1,
+        verbatimCount: 0,
+        compressedStartIndex: 8,
+      },
+    })
+
+    const { buildCompressedHistory } = await import('../../packages/server/src/services/hermes/run-chat/compression')
+    const history = await buildCompressedHistory(
+      'session-1',
+      'default',
+      'http://upstream',
+      undefined,
+      vi.fn(),
+      new Map(),
+    )
+
+    expect(deleteCompressionSnapshotMock).toHaveBeenCalledWith('session-1')
+    expect(history).toEqual([{ role: 'user', content: 'rebuilt compressed' }])
+    expect(compressorCompressMock).toHaveBeenCalledWith(
+      expect.arrayContaining([{ role: 'user', content: 'message 0' }]),
+      'http://upstream',
+      undefined,
+      'session-1',
+      expect.objectContaining({ profile: 'default' }),
+    )
   })
 
   it('does not compress when compression is disabled', async () => {

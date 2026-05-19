@@ -153,6 +153,41 @@ describe('ChatContextCompressor', () => {
     expect(saveCompressionSnapshotMock).toHaveBeenCalledWith('s1', 'compressed summary', 6, 10)
   })
 
+  it('rebuilds a full compression snapshot when an existing snapshot index is stale', async () => {
+    const { ChatContextCompressor, SUMMARY_PREFIX } = await import('../../packages/server/src/lib/context-compressor')
+    const compressor = new ChatContextCompressor({
+      config: { headMessageCount: 2, tailMessageCount: 3, summaryBudget: 1000 },
+    })
+    const messages = Array.from({ length: 8 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `message ${i}`,
+    }))
+
+    getCompressionSnapshotMock.mockReturnValue({
+      summary: 'stale previous summary',
+      lastMessageIndex: 20,
+      messageCountAtTime: 21,
+    })
+    bridgeRequestMock.mockResolvedValue({
+      status: 'completed',
+      result: { final_response: 'rebuilt summary' },
+    })
+
+    const result = await compressor.compress(messages, 'http://upstream', undefined, 's1')
+
+    expect(deleteCompressionSnapshotMock).toHaveBeenCalledWith('s1')
+    expect(bridgeRequestMock).toHaveBeenCalledTimes(1)
+    expect(result.messages.map(m => m.content)).toEqual([
+      'message 0',
+      'message 1',
+      `${SUMMARY_PREFIX}\n\nrebuilt summary`,
+      'message 5',
+      'message 6',
+      'message 7',
+    ])
+    expect(saveCompressionSnapshotMock).toHaveBeenCalledWith('s1', 'rebuilt summary', 4, 8)
+  })
+
   it('compresses the full history when protected windows cover all messages', async () => {
     const { ChatContextCompressor, SUMMARY_PREFIX } = await import('../../packages/server/src/lib/context-compressor')
     const compressor = new ChatContextCompressor({

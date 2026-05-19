@@ -525,7 +525,7 @@ export class ChatContextCompressor {
     // Check if we have a previous compression snapshot
     const snapshot = sessionId ? getCompressionSnapshot(sessionId) : null
 
-    if (snapshot) {
+    if (snapshot && snapshot.lastMessageIndex >= 0 && snapshot.lastMessageIndex < messages.length) {
       // Has snapshot → incremental compress (merge old summary with new messages)
       logger.info(
         '[context-compressor] session=%s: incremental compress with snapshot at index %d',
@@ -535,6 +535,13 @@ export class ChatContextCompressor {
         messages, snapshot, upstream, apiKey, sessionId!, makeMeta(), summarizer,
       )
     } else {
+      if (snapshot && sessionId) {
+        logger.warn(
+          '[context-compressor] session=%s: stale snapshot index %d for %d messages; rebuilding full compression snapshot',
+          sessionId, snapshot.lastMessageIndex, messages.length,
+        )
+        deleteCompressionSnapshot(sessionId)
+      }
       // No snapshot → full compress (compress all messages)
       logger.info(
         '[context-compressor] session=%s: full compress %d messages',

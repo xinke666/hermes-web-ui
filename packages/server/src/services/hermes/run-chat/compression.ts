@@ -7,7 +7,7 @@ import {
   getSessionDetail,
   getSession,
 } from '../../../db/hermes/session-store'
-import { getCompressionSnapshot } from '../../../db/hermes/compression-snapshot'
+import { deleteCompressionSnapshot, getCompressionSnapshot } from '../../../db/hermes/compression-snapshot'
 import { ChatContextCompressor, SUMMARY_PREFIX } from '../../../lib/context-compressor'
 import { getModelContextLength } from '../model-context'
 import { readConfigYamlForProfile } from '../../config-helpers'
@@ -22,6 +22,13 @@ interface RunChatCompressionConfig {
   enabled: boolean
   triggerTokens: number
   compressor: Partial<CompressorConfig>
+}
+
+function isSnapshotUsable(
+  snapshot: { lastMessageIndex: number } | null,
+  history: ChatMessage[],
+): boolean {
+  return !!snapshot && snapshot.lastMessageIndex >= 0 && snapshot.lastMessageIndex < history.length
 }
 
 function clampRatio(value: unknown, fallback: number, min: number, max: number): number {
@@ -117,10 +124,11 @@ export function estimateSnapshotAwareHistoryUsage(
   history: ChatMessage[],
 ): { messageCount: number; tokenCount: number } {
   const snapshot = getCompressionSnapshot(sessionId)
-  const messages = snapshot
+  const usableSnapshot = snapshot && isSnapshotUsable(snapshot, history) ? snapshot : null
+  const messages = usableSnapshot
     ? [
-        { role: 'user', content: SUMMARY_PREFIX + snapshot.summary },
-        ...history.slice(snapshot.lastMessageIndex + 1),
+        { role: 'user', content: SUMMARY_PREFIX + usableSnapshot.summary },
+        ...history.slice(usableSnapshot.lastMessageIndex + 1),
       ]
     : history
   const usage = estimateUsageTokensFromMessages(messages)
@@ -156,10 +164,18 @@ export async function buildCompressedHistory(
     }
     const cState = getOrCreateSession(sessionMap, sessionId)
     const assembledTokens = await calcAndUpdateUsage(sessionId, cState, emit)
-    const totalTokens = assembledTokens.inputTokens + assembledTokens.outputTokens
+    let totalTokens = assembledTokens.inputTokens + assembledTokens.outputTokens
     const snapshot = getCompressionSnapshot(sessionId)
+    const staleSnapshot = snapshot && !isSnapshotUsable(snapshot, history)
+    if (staleSnapshot) {
+      logger.warn('[context-compress] session=%s: stale snapshot index %d for %d history messages; rebuilding snapshot',
+        sessionId, snapshot.lastMessageIndex, history.length)
+      deleteCompressionSnapshot(sessionId)
+      const fullUsage = estimateUsageTokensFromMessages(history)
+      totalTokens = fullUsage.inputTokens + fullUsage.outputTokens
+    }
 
-    if (snapshot) {
+    if (snapshot && !staleSnapshot) {
       const newMessages = history.slice(snapshot.lastMessageIndex + 1)
       logger.info('[context-compress] session=%s: snapshot at %d, %d new messages, assembled ~%d tokens (threshold %d)',
         sessionId, snapshot.lastMessageIndex, newMessages.length, totalTokens, triggerTokens)
