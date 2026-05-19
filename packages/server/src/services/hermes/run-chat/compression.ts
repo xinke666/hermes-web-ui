@@ -118,7 +118,7 @@ export async function buildCompressedHistory(
       const newMessages = history.slice(snapshot.lastMessageIndex + 1)
       logger.info('[context-compress] session=%s: snapshot at %d, %d new messages, assembled ~%d tokens (threshold %d)',
         sessionId, snapshot.lastMessageIndex, newMessages.length, totalTokens, triggerTokens)
-      if (totalTokens <= triggerTokens && newMessages.length <= 150) {
+      if (totalTokens <= triggerTokens) {
         history = [
           { role: 'user', content: SUMMARY_PREFIX + '\n\n' + snapshot.summary },
           ...newMessages,
@@ -127,7 +127,7 @@ export async function buildCompressedHistory(
         history = await compressHistory(history, newMessages, sessionId, upstream, apiKey, cState, totalTokens, emit, sessionMap, modelContext)
       }
     } else if (history.length > 4) {
-      if (totalTokens <= triggerTokens && history.length <= 150) {
+      if (totalTokens <= triggerTokens) {
         logger.info('[context-compress] session=%s: %d messages, ~%d tokens — under threshold, skip', sessionId, history.length, totalTokens)
       } else {
         history = await compressHistory(history, null, sessionId, upstream, apiKey, cState, totalTokens, emit, sessionMap, modelContext)
