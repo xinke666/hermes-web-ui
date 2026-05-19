@@ -10,14 +10,57 @@ import {
 import { getCompressionSnapshot } from '../../../db/hermes/compression-snapshot'
 import { ChatContextCompressor, SUMMARY_PREFIX } from '../../../lib/context-compressor'
 import { getModelContextLength } from '../model-context'
+import { readConfigYamlForProfile } from '../../config-helpers'
 import { logger } from '../../logger'
 import { bridgeLogger } from '../../logger'
 import { calcAndUpdateUsage, estimateUsageTokensFromMessages } from './usage'
 import { isAssistantMessageSendable } from './message-format'
-import type { ChatMessage } from '../../../lib/context-compressor'
+import type { ChatMessage, CompressionConfig as CompressorConfig } from '../../../lib/context-compressor'
 import type { SessionState, BridgeCompressionResult } from './types'
 
-const compressor = new ChatContextCompressor()
+interface RunChatCompressionConfig {
+  enabled: boolean
+  triggerTokens: number
+  hygieneHardMessageLimit: number
+  compressor: Partial<CompressorConfig>
+}
+
+function clampRatio(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+async function getRunChatCompressionConfig(profile: string, contextLength: number): Promise<RunChatCompressionConfig> {
+  let raw: Record<string, any> = {}
+  try {
+    raw = (await readConfigYamlForProfile(profile))?.compression || {}
+  } catch (err) {
+    logger.warn(err, '[context-compress] failed to read compression config for profile %s, using defaults', profile)
+  }
+
+  const threshold = clampRatio(raw.threshold, 0.5, 0.05, 0.95)
+  const targetRatio = clampRatio(raw.target_ratio, 0.2, 0.01, 0.8)
+  const protectLastN = clampInt(raw.protect_last_n, 20, 0, 500)
+  const protectFirstN = clampInt(raw.protect_first_n, 3, 0, 100)
+  const hygieneHardMessageLimit = clampInt(raw.hygiene_hard_message_limit, 400, 0, 10_000)
+
+  return {
+    enabled: raw.enabled !== false,
+    triggerTokens: Math.floor(contextLength * threshold),
+    hygieneHardMessageLimit,
+    compressor: {
+      triggerTokens: Math.floor(contextLength * threshold),
+      summaryBudget: Math.max(1_000, Math.floor(contextLength * targetRatio)),
+      headMessageCount: protectFirstN,
+      tailMessageCount: protectLastN,
+    },
+  }
+}
 
 /**
  * Load conversation history from DB with full message structure (user/assistant/tool).
@@ -108,29 +151,41 @@ export async function buildCompressedHistory(
       model: modelContext.model,
       provider: modelContext.provider,
     })
-    const triggerTokens = Math.floor(contextLength / 2)
+    const compressionConfig = await getRunChatCompressionConfig(profile, contextLength)
+    const triggerTokens = compressionConfig.triggerTokens
+    if (!compressionConfig.enabled) {
+      logger.info('[context-compress] session=%s: compression disabled by config', sessionId)
+      return history
+    }
     const cState = getOrCreateSession(sessionMap, sessionId)
     const assembledTokens = await calcAndUpdateUsage(sessionId, cState, emit)
     const totalTokens = assembledTokens.inputTokens + assembledTokens.outputTokens
+    const forceByMessageLimit = compressionConfig.hygieneHardMessageLimit > 0 &&
+      history.length > compressionConfig.hygieneHardMessageLimit
     const snapshot = getCompressionSnapshot(sessionId)
 
     if (snapshot) {
       const newMessages = history.slice(snapshot.lastMessageIndex + 1)
-      logger.info('[context-compress] session=%s: snapshot at %d, %d new messages, assembled ~%d tokens (threshold %d)',
-        sessionId, snapshot.lastMessageIndex, newMessages.length, totalTokens, triggerTokens)
-      if (totalTokens <= triggerTokens) {
+      logger.info('[context-compress] session=%s: snapshot at %d, %d new messages, assembled ~%d tokens (threshold %d, hardLimit %d)',
+        sessionId, snapshot.lastMessageIndex, newMessages.length, totalTokens, triggerTokens, compressionConfig.hygieneHardMessageLimit)
+      if (totalTokens <= triggerTokens && !forceByMessageLimit) {
+        const protectedHeadCount = compressionConfig.compressor.headMessageCount || 0
+        const protectedHead = protectedHeadCount > 0
+          ? history.slice(0, protectedHeadCount)
+          : []
         history = [
+          ...protectedHead,
           { role: 'user', content: SUMMARY_PREFIX + '\n\n' + snapshot.summary },
           ...newMessages,
         ] as ChatMessage[]
       } else {
-        history = await compressHistory(history, newMessages, sessionId, upstream, apiKey, cState, totalTokens, emit, sessionMap, modelContext)
+        history = await compressHistory(history, newMessages, sessionId, upstream, apiKey, cState, totalTokens, emit, sessionMap, modelContext, compressionConfig.compressor)
       }
     } else if (history.length > 4) {
-      if (totalTokens <= triggerTokens) {
+      if (totalTokens <= triggerTokens && !forceByMessageLimit) {
         logger.info('[context-compress] session=%s: %d messages, ~%d tokens — under threshold, skip', sessionId, history.length, totalTokens)
       } else {
-        history = await compressHistory(history, null, sessionId, upstream, apiKey, cState, totalTokens, emit, sessionMap, modelContext)
+        history = await compressHistory(history, null, sessionId, upstream, apiKey, cState, totalTokens, emit, sessionMap, modelContext, compressionConfig.compressor)
       }
     }
 
@@ -152,6 +207,7 @@ export async function compressHistory(
   emit: (event: string, payload: any) => void,
   sessionMap: Map<string, SessionState>,
   modelContext: { model?: string | null; provider?: string | null } = {},
+  compressionConfig?: Partial<CompressorConfig>,
 ): Promise<ChatMessage[]> {
   const msgCount = newMessagesOnly ? newMessagesOnly.length : history.length
   pushState(sessionMap, sessionId, 'compression.started', {
@@ -163,6 +219,7 @@ export async function compressHistory(
 
   try {
     const session = getSession(sessionId)
+    const compressor = new ChatContextCompressor({ config: compressionConfig })
     const result = await compressor.compress(history, upstream, apiKey, sessionId, {
       profile: session?.profile,
       model: modelContext.model || session?.model,
@@ -244,6 +301,8 @@ export async function forceCompressBridgeHistory(
   const upstream = ''
   const apiKey = undefined
   const session = getSession(sessionId)
+  const contextLength = getModelContextLength({ profile, model: session?.model, provider: session?.provider })
+  const compressionConfig = await getRunChatCompressionConfig(session?.profile || profile, contextLength)
   const beforeUsage = estimateSnapshotAwareHistoryUsage(sessionId, history)
   const totalTokens = beforeUsage.tokenCount
   bridgeLogger.info({
@@ -256,6 +315,7 @@ export async function forceCompressBridgeHistory(
     snapshotAware: true,
   }, '[chat-run-socket] bridge forced compression started')
 
+  const compressor = new ChatContextCompressor({ config: compressionConfig.compressor })
   const result = await compressor.compress(history, upstream, apiKey, sessionId, {
     profile: session?.profile || profile,
     model: session?.model,

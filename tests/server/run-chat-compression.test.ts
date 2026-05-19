@@ -6,6 +6,7 @@ const getCompressionSnapshotMock = vi.fn()
 const getModelContextLengthMock = vi.fn()
 const calcAndUpdateUsageMock = vi.fn()
 const compressorCompressMock = vi.fn()
+const readConfigYamlForProfileMock = vi.fn()
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSessionDetail: getSessionDetailMock,
@@ -25,6 +26,10 @@ vi.mock('../../packages/server/src/lib/context-compressor', () => ({
 
 vi.mock('../../packages/server/src/services/hermes/model-context', () => ({
   getModelContextLength: getModelContextLengthMock,
+}))
+
+vi.mock('../../packages/server/src/services/config-helpers', () => ({
+  readConfigYamlForProfile: readConfigYamlForProfileMock,
 }))
 
 vi.mock('../../packages/server/src/services/logger', () => ({
@@ -64,6 +69,7 @@ describe('run chat compression trigger', () => {
     getModelContextLengthMock.mockReturnValue(200_000)
     calcAndUpdateUsageMock.mockResolvedValue({ inputTokens: 1_000, outputTokens: 0 })
     getCompressionSnapshotMock.mockReturnValue(null)
+    readConfigYamlForProfileMock.mockResolvedValue({})
   })
 
   it('does not compress long low-token history just because it has more than 150 messages', async () => {
@@ -95,5 +101,89 @@ describe('run chat compression trigger', () => {
     expect(history[0]).toEqual({ role: 'user', content: 'm0' })
     expect(history.at(-1)).toEqual({ role: 'user', content: 'm150' })
     expect(compressorCompressMock).not.toHaveBeenCalled()
+  })
+
+  it('uses configured threshold before triggering compression', async () => {
+    const messages = Array.from({ length: 10 }, (_, index) => ({
+      id: index + 1,
+      session_id: 'session-1',
+      role: index === 9 ? 'user' : index % 2 === 0 ? 'user' : 'assistant',
+      content: `message ${index}`,
+      timestamp: index + 1,
+      tool_call_id: null,
+      tool_calls: null,
+      tool_name: null,
+      finish_reason: null,
+      reasoning_content: null,
+    }))
+    getSessionDetailMock.mockReturnValue({ messages })
+    readConfigYamlForProfileMock.mockResolvedValue({
+      compression: { threshold: 0.25, target_ratio: 0.1, protect_last_n: 7, protect_first_n: 2 },
+    })
+    calcAndUpdateUsageMock.mockResolvedValue({ inputTokens: 60_000, outputTokens: 0 })
+    compressorCompressMock.mockResolvedValue({
+      messages: [{ role: 'user', content: 'compressed' }],
+      meta: {
+        compressed: true,
+        llmCompressed: true,
+        totalMessages: 9,
+        summaryTokenEstimate: 1,
+        verbatimCount: 0,
+        compressedStartIndex: 0,
+      },
+    })
+
+    const { buildCompressedHistory } = await import('../../packages/server/src/services/hermes/run-chat/compression')
+    const history = await buildCompressedHistory(
+      'session-1',
+      'default',
+      'http://upstream',
+      undefined,
+      vi.fn(),
+      new Map(),
+    )
+
+    expect(history).toEqual([{ role: 'user', content: 'compressed' }])
+    expect(compressorCompressMock).toHaveBeenCalledWith(
+      expect.any(Array),
+      'http://upstream',
+      undefined,
+      'session-1',
+      expect.objectContaining({ profile: 'default' }),
+    )
+  })
+
+  it('does not compress when compression is disabled', async () => {
+    const messages = Array.from({ length: 10 }, (_, index) => ({
+      id: index + 1,
+      session_id: 'session-1',
+      role: index === 9 ? 'user' : index % 2 === 0 ? 'user' : 'assistant',
+      content: `message ${index}`,
+      timestamp: index + 1,
+      tool_call_id: null,
+      tool_calls: null,
+      tool_name: null,
+      finish_reason: null,
+      reasoning_content: null,
+    }))
+    getSessionDetailMock.mockReturnValue({ messages })
+    readConfigYamlForProfileMock.mockResolvedValue({
+      compression: { enabled: false, threshold: 0.01, hygiene_hard_message_limit: 1 },
+    })
+    calcAndUpdateUsageMock.mockResolvedValue({ inputTokens: 180_000, outputTokens: 0 })
+
+    const { buildCompressedHistory } = await import('../../packages/server/src/services/hermes/run-chat/compression')
+    const history = await buildCompressedHistory(
+      'session-1',
+      'default',
+      'http://upstream',
+      undefined,
+      vi.fn(),
+      new Map(),
+    )
+
+    expect(history).toHaveLength(9)
+    expect(compressorCompressMock).not.toHaveBeenCalled()
+    expect(calcAndUpdateUsageMock).not.toHaveBeenCalled()
   })
 })

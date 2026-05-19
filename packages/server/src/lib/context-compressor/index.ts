@@ -46,6 +46,8 @@ export interface CompressionConfig {
   triggerTokens: number
   /** Summary token target (default: 8000) */
   summaryBudget: number
+  /** Number of earliest messages to keep verbatim (default: 0) */
+  headMessageCount: number
   /** Number of recent messages to keep verbatim (default: 10) */
   tailMessageCount: number
   /** Timeout for LLM summarization call (default: 60_000ms) */
@@ -55,6 +57,7 @@ export interface CompressionConfig {
 export const DEFAULT_COMPRESSION_CONFIG: CompressionConfig = {
   triggerTokens: 100_000,
   summaryBudget: 8_000,
+  headMessageCount: 0,
   tailMessageCount: 10,
   summarizationTimeoutMs: 120_000,
 }
@@ -505,6 +508,8 @@ export class ChatContextCompressor {
     const { summary: previousSummary, lastMessageIndex } = snapshot
     const total = messages.length
     const cleaned = pruneOldToolResults(messages, this.config.tailMessageCount)
+    const headCount = Math.min(this.config.headMessageCount, Math.max(0, lastMessageIndex + 1))
+    const head = cleaned.slice(0, headCount)
     const newMessages = cleaned.slice(lastMessageIndex + 1)
     const tailCount = this.config.tailMessageCount
 
@@ -516,6 +521,7 @@ export class ChatContextCompressor {
     if (toCompress.length === 0) {
       return {
         messages: [
+          ...head,
           { role: 'user', content: SUMMARY_PREFIX + '\n\n' + previousSummary },
           ...newMessages,
         ],
@@ -524,7 +530,7 @@ export class ChatContextCompressor {
           compressed: true,
           llmCompressed: false,
           summaryTokenEstimate: countTokens(SUMMARY_PREFIX + previousSummary),
-          verbatimCount: newMessages.length,
+          verbatimCount: head.length + newMessages.length,
           compressedStartIndex: lastMessageIndex,
         },
       }
@@ -548,6 +554,7 @@ export class ChatContextCompressor {
       logger.warn('[context-compressor] incremental-llm failed: %s — keeping new messages verbatim', err.message)
       return {
         messages: [
+          ...head,
           { role: 'user', content: SUMMARY_PREFIX + '\n\n' + previousSummary },
           ...newMessages,
         ],
@@ -556,13 +563,14 @@ export class ChatContextCompressor {
           compressed: true,
           llmCompressed: false,
           summaryTokenEstimate: countTokens(SUMMARY_PREFIX + previousSummary),
-          verbatimCount: newMessages.length,
+          verbatimCount: head.length + newMessages.length,
           compressedStartIndex: lastMessageIndex,
         },
       }
     }
 
     const result: ChatMessage[] = [
+      ...head,
       { role: 'user', content: SUMMARY_PREFIX + '\n\n' + summary },
       ...tail,
     ]
@@ -579,7 +587,7 @@ export class ChatContextCompressor {
         compressed: true,
         llmCompressed: true,
         summaryTokenEstimate: countTokens(SUMMARY_PREFIX + summary),
-        verbatimCount: tail.length,
+        verbatimCount: head.length + tail.length,
         compressedStartIndex: newLastIndex,
       },
     }
@@ -595,19 +603,21 @@ export class ChatContextCompressor {
   ): Promise<CompressedResult> {
     const total = messages.length
     const cleaned = pruneOldToolResults(messages, this.config.tailMessageCount)
+    const headCount = Math.min(this.config.headMessageCount, total)
     const tailCount = this.config.tailMessageCount
 
-    if (total <= tailCount) {
+    if (total <= headCount + tailCount) {
       return { messages: cleaned, meta }
     }
 
     const tailStart = total - tailCount
-    const toCompress = cleaned.slice(0, tailStart)
+    const head = cleaned.slice(0, headCount)
+    const toCompress = cleaned.slice(headCount, tailStart)
     const tail = cleaned.slice(tailStart)
 
     logger.info(
-      '[context-compressor] [full-llm] compressing messages 0-%d, keeping %d-%d',
-      tailStart - 1, tailStart, total - 1,
+      '[context-compressor] [full-llm] compressing messages %d-%d, keeping first %d and last %d',
+      headCount, tailStart - 1, head.length, tail.length,
     )
 
     const contentToSummarize = serializeForSummary(toCompress)
@@ -629,6 +639,7 @@ export class ChatContextCompressor {
 
     const result: ChatMessage[] = []
 
+    result.push(...head)
     result.push({ role: 'user', content: SUMMARY_PREFIX + '\n\n' + summary })
     if (sessionId) {
       saveCompressionSnapshot(sessionId, summary, tailStart - 1, total)
@@ -643,7 +654,7 @@ export class ChatContextCompressor {
         compressed: true,
         llmCompressed: !!summary,
         summaryTokenEstimate: summary ? countTokens(SUMMARY_PREFIX + summary) : 0,
-        verbatimCount: tail.length,
+        verbatimCount: head.length + tail.length,
         compressedStartIndex: tailStart - 1,
       },
     }
