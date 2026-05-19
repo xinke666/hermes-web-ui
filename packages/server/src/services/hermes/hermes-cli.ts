@@ -77,7 +77,18 @@ function readGatewayLockPid(profileDir: string): number | null {
 function readGatewayStatePid(profileDir: string): number | null {
   const pid = readJsonPid(join(profileDir, 'gateway.pid'))
   if (pid) return pid
-  return readJsonPid(join(profileDir, 'gateway_state.json'))
+  const statePath = join(profileDir, 'gateway_state.json')
+  if (!existsSync(statePath)) return null
+  try {
+    const data = JSON.parse(readFileSync(statePath, 'utf-8'))
+    const state = data?.gateway_state
+    const statePid = typeof data?.pid === 'number' ? data.pid : parseInt(String(data?.pid || ''), 10)
+    return statePid && Number.isFinite(statePid) && statePid > 0 && (state === 'running' || state === 'starting')
+      ? statePid
+      : null
+  } catch {
+    return null
+  }
 }
 
 async function killWindowsPid(pid: number): Promise<void> {
@@ -93,7 +104,7 @@ async function killWindowsPid(pid: number): Promise<void> {
   }
 }
 
-function cleanupStaleGatewayLock(profileDir: string): boolean {
+function cleanupStaleGatewayLock(profileDir: string, allowMalformedDelete = false): boolean {
   const lockPath = join(profileDir, 'gateway.lock')
   if (!existsSync(lockPath)) return true
   try {
@@ -103,6 +114,7 @@ function cleanupStaleGatewayLock(profileDir: string): boolean {
     unlinkSync(lockPath)
     return true
   } catch {
+    if (!allowMalformedDelete) return false
     try {
       unlinkSync(lockPath)
       return true
@@ -112,13 +124,13 @@ function cleanupStaleGatewayLock(profileDir: string): boolean {
   }
 }
 
-async function waitForGatewayLockReleased(profileDir: string, timeoutMs = 15000): Promise<boolean> {
+async function waitForGatewayLockReleased(profileDir: string, timeoutMs = 15000, allowMalformedDelete = false): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (cleanupStaleGatewayLock(profileDir)) return true
+    if (cleanupStaleGatewayLock(profileDir, allowMalformedDelete)) return true
     await sleep(500)
   }
-  return cleanupStaleGatewayLock(profileDir)
+  return cleanupStaleGatewayLock(profileDir, allowMalformedDelete)
 }
 
 async function forceReleaseWindowsGatewayLock(profileDir: string): Promise<void> {
@@ -140,7 +152,7 @@ async function forceReleaseWindowsGatewayLock(profileDir: string): Promise<void>
 async function waitForGatewayLockReleasedAfterStop(profileDir: string, timeoutMs = 15000): Promise<boolean> {
   if (await waitForGatewayLockReleased(profileDir, timeoutMs)) return true
   await forceReleaseWindowsGatewayLock(profileDir)
-  return waitForGatewayLockReleased(profileDir, 5000)
+  return waitForGatewayLockReleased(profileDir, 5000, true)
 }
 
 function activeGatewayExecOpts() {
