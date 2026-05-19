@@ -620,6 +620,8 @@ export default {
     visibilitySaveFailed: '保存可见模型失败',
     showAllModels: '显示全部模型',
     clearVisibleModels: '取消全选',
+    currentDefault: '当前默认',
+    defaultShort: '默认',
     builtIn: '内置',
     customType: '自定义',
     provider: 'Provider',

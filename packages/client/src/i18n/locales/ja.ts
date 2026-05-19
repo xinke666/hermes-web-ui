@@ -461,6 +461,8 @@ export default {
     customModelHint: 'プロバイダーは対応しているが API が返さないモデル用です。表示名の変更ではありません。Enter で読み込み。',
     noProviders: 'プロバイダーがありません。カスタムプロバイダーを追加して始めましょう。',
     clearVisibleModels: '選択をクリア',
+    currentDefault: '現在のデフォルト',
+    defaultShort: 'デフォルト',
     builtIn: '組み込み',
     customType: 'カスタム',
     provider: 'プロバイダー',

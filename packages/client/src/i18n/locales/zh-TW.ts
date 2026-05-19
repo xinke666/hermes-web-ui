@@ -611,6 +611,8 @@ export default {
     visibilitySaveFailed: '儲存可見模型失敗',
     showAllModels: '顯示全部模型',
     clearVisibleModels: '取消全選',
+    currentDefault: '目前預設',
+    defaultShort: '預設',
     aliasEdit: '重新命名',
     aliasTitle: '模型顯示名',
     aliasTitleFor: '{model} 的顯示名',
