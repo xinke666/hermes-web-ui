@@ -107,7 +107,8 @@ describe('prompts', () => {
         expect(result).toContain('AI coding assistant')
         expect(result).toContain('Alice')
         expect(result).toContain('Bob')
-        expect(result).toContain('@Claude')
+        expect(result).toContain('- Claude')
+        expect(result).not.toContain('@Claude')
     })
 
     it('builds agent instructions with empty member list', () => {
