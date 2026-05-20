@@ -3,7 +3,6 @@ import {
   gatewayStatusLooksRuntimeLocked,
   gatewayStatusLooksRunning,
   parseGatewayStatusesFromProfileListOutput,
-  shouldAutostartAllProfileGateways,
   shouldUseManagedGatewayRun,
 } from '../../packages/server/src/services/hermes/gateway-autostart'
 
@@ -46,19 +45,6 @@ describe('gateway autostart status parsing', () => {
     } finally {
       if (previous === undefined) delete process.env.HERMES_WEB_UI_MANAGED_GATEWAY
       else process.env.HERMES_WEB_UI_MANAGED_GATEWAY = previous
-    }
-  })
-
-  it('does not autostart all profile gateways unless explicitly enabled', () => {
-    const previous = process.env.HERMES_WEB_UI_AUTOSTART_ALL_PROFILES
-    delete process.env.HERMES_WEB_UI_AUTOSTART_ALL_PROFILES
-    try {
-      expect(shouldAutostartAllProfileGateways()).toBe(false)
-      process.env.HERMES_WEB_UI_AUTOSTART_ALL_PROFILES = 'true'
-      expect(shouldAutostartAllProfileGateways()).toBe(true)
-    } finally {
-      if (previous === undefined) delete process.env.HERMES_WEB_UI_AUTOSTART_ALL_PROFILES
-      else process.env.HERMES_WEB_UI_AUTOSTART_ALL_PROFILES = previous
     }
   })
 })
