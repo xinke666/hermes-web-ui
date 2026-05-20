@@ -725,7 +725,12 @@ function openChangelog() {
     justify-content: center;
     padding: 0;
     gap: 0;
-    border-radius: $radius-sm;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  :deep(.profile-selector .profile-display:hover) {
     background: transparent;
   }
 
