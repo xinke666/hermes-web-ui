@@ -1,5 +1,6 @@
 import Router from '@koa/router'
 import type { GroupChatServer } from '../../services/hermes/group-chat'
+import { isReservedMentionName } from '../../services/hermes/group-chat/mention-routing'
 
 export const groupChatRoutes = new Router()
 
@@ -29,59 +30,12 @@ function generateInviteCode(): string {
 
 type AgentInput = { profile: string; name?: string; description?: string; invited?: boolean }
 
-interface GatewayReadinessFailure {
-    code: 'PROFILE_GATEWAY_NOT_READY'
-    error: string
-    profile: string
-    running: boolean
-    reason: string
-    health_url?: string
-}
-
 function sanitizeReason(reason?: string): string {
-    return (reason || 'gateway health check failed')
+    return (reason || 'agent runtime request failed')
         .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
         .replace(/(api[_-]?key|token|secret|password)=([^\s]+)/gi, '$1=[REDACTED]')
         .split('\n')[0]
         .slice(0, 240)
-}
-
-function gatewayManagerOf(server: GroupChatServer): any {
-    return (server as any).getGatewayManager?.() ?? null
-}
-
-async function checkProfileGatewayReady(server: GroupChatServer, profile: string): Promise<{ ok: true; gateway?: any } | { ok: false; failure: GatewayReadinessFailure }> {
-    const manager = gatewayManagerOf(server)
-    if (!manager?.detectStatus) return { ok: true }
-
-    try {
-        const gateway = await manager.detectStatus(profile)
-        if (gateway?.running) return { ok: true, gateway }
-        const reason = sanitizeReason(gateway?.diagnostics?.reason)
-        return {
-            ok: false,
-            failure: {
-                code: 'PROFILE_GATEWAY_NOT_READY',
-                error: `Profile gateway "${profile}" is not ready: ${reason}`,
-                profile,
-                running: false,
-                reason,
-                health_url: gateway?.diagnostics?.health_url,
-            },
-        }
-    } catch (err: any) {
-        const reason = sanitizeReason(err?.message || 'gateway status check failed')
-        return {
-            ok: false,
-            failure: {
-                code: 'PROFILE_GATEWAY_NOT_READY',
-                error: `Profile gateway "${profile}" is not ready: ${reason}`,
-                profile,
-                running: false,
-                reason,
-            },
-        }
-    }
 }
 
 function connectFailureBody(profile: string, err: any) {
@@ -94,14 +48,6 @@ function connectFailureBody(profile: string, err: any) {
 }
 
 async function connectRoomAgent(server: GroupChatServer, roomId: string, agent: AgentInput, agentId = generateId()): Promise<any> {
-    const readiness = await checkProfileGatewayReady(server, agent.profile)
-    if (!readiness.ok) {
-        const err: any = new Error(readiness.failure.error)
-        err.status = 424
-        err.body = readiness.failure
-        throw err
-    }
-
     const client = await server.agentClients.createAgent({
         profile: agent.profile,
         name: agent.name || agent.profile,
@@ -144,12 +90,19 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx) => {
         ctx.body = { error: 'name and inviteCode are required' }
         return
     }
+    const reservedAgent = (agents || []).find(a => isReservedMentionName(a.name || a.profile))
+    if (reservedAgent) {
+        ctx.status = 400
+        ctx.body = { error: '`all` is reserved for @all mentions' }
+        return
+    }
 
     const roomId = generateId()
     const storage = chatServer.getStorage()
     storage.saveRoom(roomId, name, inviteCode, compression)
 
-    // Save only agents that pass gateway readiness and connect via Socket.IO.
+    // Save only agents that connect to the group-chat runtime. Profile gateway health
+    // is not a group-chat dependency; bridge/runtime failures are surfaced later.
     const addedAgents = []
     const agentResults = []
     for (const a of agents || []) {
@@ -301,6 +254,11 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx) 
     if (!profile) {
         ctx.status = 400
         ctx.body = { error: 'profile is required' }
+        return
+    }
+    if (isReservedMentionName(name || profile)) {
+        ctx.status = 400
+        ctx.body = { error: '`all` is reserved for @all mentions' }
         return
     }
 

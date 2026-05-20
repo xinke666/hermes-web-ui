@@ -9,35 +9,34 @@ function routeHandler(path: string, method: string) {
   return layer.stack[0]
 }
 
-describe('Group Chat profile gateway readiness', () => {
+describe('Group Chat agent runtime failure visibility', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('rejects Add Agent before persisting when the profile gateway is not ready', async () => {
+  it('does not block Add Agent on profile gateway health', async () => {
+    const detectStatus = vi.fn().mockResolvedValue({
+      profile: 'work',
+      port: 8643,
+      host: '127.0.0.1',
+      url: 'http://127.0.0.1:8643',
+      running: false,
+      diagnostics: {
+        reason: 'missing pid file',
+        health_url: 'http://127.0.0.1:8643/health',
+        health_checked_at: '2026-05-19T00:00:00.000Z',
+      },
+    })
     const storage = {
       getRoomAgents: vi.fn(() => []),
-      addRoomAgent: vi.fn(),
+      addRoomAgent: vi.fn(() => ({ id: 'agent-1', profile: 'work', name: 'Worker' })),
     }
     const chatServer = {
       getStorage: () => storage,
-      getGatewayManager: () => ({
-        detectStatus: vi.fn().mockResolvedValue({
-          profile: 'work',
-          port: 8643,
-          host: '127.0.0.1',
-          url: 'http://127.0.0.1:8643',
-          running: false,
-          diagnostics: {
-            reason: 'missing pid file',
-            health_url: 'http://127.0.0.1:8643/health',
-            health_checked_at: '2026-05-19T00:00:00.000Z',
-          },
-        }),
-      }),
+      getGatewayManager: () => ({ detectStatus }),
       agentClients: {
-        createAgent: vi.fn(),
-        addAgentToRoom: vi.fn(),
+        createAgent: vi.fn().mockResolvedValue({ agentId: 'runtime-agent-1' }),
+        addAgentToRoom: vi.fn().mockResolvedValue(undefined),
       },
     }
     setGroupChatServer(chatServer as any)
@@ -52,15 +51,12 @@ describe('Group Chat profile gateway readiness', () => {
 
     await handler(ctx, async () => {})
 
-    expect(ctx.status).toBe(424)
-    expect(ctx.body).toMatchObject({
-      code: 'PROFILE_GATEWAY_NOT_READY',
-      profile: 'work',
-      running: false,
-    })
-    expect(ctx.body.error).toContain('work')
-    expect(storage.addRoomAgent).not.toHaveBeenCalled()
-    expect(chatServer.agentClients.createAgent).not.toHaveBeenCalled()
+    expect(ctx.status).toBe(200)
+    expect(ctx.body).toMatchObject({ agent: { profile: 'work', name: 'Worker' } })
+    expect(detectStatus).not.toHaveBeenCalled()
+    expect(chatServer.agentClients.createAgent).toHaveBeenCalledWith(expect.objectContaining({ profile: 'work' }))
+    expect(chatServer.agentClients.addAgentToRoom).toHaveBeenCalled()
+    expect(storage.addRoomAgent).toHaveBeenCalled()
   })
 
   it('returns a sanitized Add Agent connection failure without persisting the agent', async () => {
@@ -116,7 +112,7 @@ describe('Group Chat profile gateway readiness', () => {
     expect(client.disconnect).toHaveBeenCalled()
   })
 
-  it('emits a visible agent error when a mentioned agent cannot reach its profile gateway', async () => {
+  it('emits a visible agent error when a mentioned agent cannot reach its profile runtime', async () => {
     const clients = new AgentClients()
     const sendAgentError = vi.fn()
     ;(clients as any).setAgentErrorHandler(sendAgentError)
@@ -142,7 +138,7 @@ describe('Group Chat profile gateway readiness', () => {
       roomId: 'room-1',
       agentName: 'Worker',
       profile: 'work',
-      code: 'PROFILE_GATEWAY_DISPATCH_FAILED',
+      code: 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED',
     }))
     expect(sendAgentError.mock.calls[0][0].message).toContain('Worker')
     expect(sendAgentError.mock.calls[0][0].message).not.toContain('stack')

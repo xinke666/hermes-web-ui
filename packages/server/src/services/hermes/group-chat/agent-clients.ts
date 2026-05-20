@@ -5,6 +5,11 @@ import { updateUsage } from '../../../db/hermes/usage-store'
 import { AgentBridgeClient, type AgentBridgeMessage, type AgentBridgeOutput } from '../agent-bridge'
 import { convertContentBlocksForAgent, isContentBlockArray } from '../run-chat/content-blocks'
 import type { ContentBlock } from '../run-chat/types'
+import {
+    isAllAgentsMentioned,
+    resolveMentionTargets,
+    stripMentionRoutingTokens,
+} from './mention-routing'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -59,7 +64,7 @@ export interface AgentErrorEvent {
     roomId: string
     agentName: string
     profile: string
-    code: 'PROFILE_GATEWAY_NOT_READY' | 'PROFILE_GATEWAY_DISPATCH_FAILED'
+    code: 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED'
     message: string
     detail?: string
 }
@@ -318,20 +323,20 @@ class AgentClient {
                 }
             }
 
-            // Keep the original mentions visible and add an explicit routing note.
-            // When a user mentions multiple agents, stripping only this agent's
-            // name can make the remaining input look like it was meant for
-            // someone else.
-            const routedPrefix = `群聊系统：这条消息已经提及你（${this.name}），请直接回复；即使消息同时提及其他成员，也不要因此输出空回复。`
-            const ownMentionPattern = new RegExp(`@${this.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'gi')
+            // Keep routing explicit while removing only the mention tokens that
+            // selected this agent. This avoids making @all look like an
+            // instruction for the model to fan out another routing cycle.
+            const routedPrefix = isAllAgentsMentioned(msg.content)
+                ? `群聊系统：这条消息通过 @all 提及所有 agent，你是其中之一，请直接回复。`
+                : `群聊系统：这条消息已经提及你（${this.name}），请直接回复；即使消息同时提及其他成员，也不要因此输出空回复。`
             const rawInput = msg.input || msg.content
             const input = isContentBlockArray(rawInput)
                 ? rawInput.map((block) => {
                     if (block.type !== 'text') return block
-                    const text = String(block.text || msg.content).replace(ownMentionPattern, '').trim()
+                    const text = stripMentionRoutingTokens(String(block.text || msg.content), this.name)
                     return { ...block, text: `${routedPrefix}\n\n原始消息：${text || msg.content}` }
                 })
-                : `${routedPrefix}\n\n原始消息：${msg.content.replace(ownMentionPattern, '').trim() || msg.content}`
+                : `${routedPrefix}\n\n原始消息：${stripMentionRoutingTokens(msg.content, this.name) || msg.content}`
             const bridgeInput: AgentBridgeMessage = isContentBlockArray(input)
                 ? await convertContentBlocksForAgent(input)
                 : input
@@ -388,7 +393,7 @@ class AgentClient {
             if (lastChunk?.status === 'error') {
                 const detail = sanitizeAgentErrorDetail(lastChunk.error || 'unknown error') || 'unknown error'
                 logger.error(`[AgentClients] ${this.name}: bridge response failed: ${detail}`)
-                this.emitAgentError(roomId, 'PROFILE_GATEWAY_DISPATCH_FAILED', detail)
+                this.emitAgentError(roomId, 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED', detail)
                 this.emitMessageStreamEnd(roomId, streamMessageId)
                 this.safeStopTyping(roomId)
                 onStatus?.('ready')
@@ -414,14 +419,14 @@ class AgentClient {
                 return
             }
             logger.warn(`[AgentClients] ${this.name}: bridge response completed without content`)
-            this.emitAgentError(roomId, 'PROFILE_GATEWAY_DISPATCH_FAILED', 'Gateway response completed without content')
+            this.emitAgentError(roomId, 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED', 'Agent runtime response completed without content')
             this.emitMessageStreamEnd(roomId, streamMessageId)
             this.safeStopTyping(roomId)
             onStatus?.('ready')
         } catch (err: any) {
-            const detail = sanitizeAgentErrorDetail(err?.message) || 'Gateway request failed'
+            const detail = sanitizeAgentErrorDetail(err?.message) || 'Agent runtime request failed'
             logger.error(`[AgentClients] ${this.name}: error handling message: ${detail}`)
-            this.emitAgentError(roomId, 'PROFILE_GATEWAY_DISPATCH_FAILED', detail)
+            this.emitAgentError(roomId, 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED', detail)
             this.safeStopTyping(roomId)
             onStatus?.('ready')
         }
@@ -434,7 +439,7 @@ class AgentClient {
             profile: this.profile,
             code,
             detail: sanitizeAgentErrorDetail(detail),
-            message: buildAgentErrorMessage(this.name, this.profile, code, detail),
+            message: buildAgentErrorMessage(this.name, this.profile, detail),
         })
     }
 
@@ -623,11 +628,9 @@ function sanitizeAgentErrorDetail(detail?: string): string | undefined {
         .slice(0, 240)
 }
 
-function buildAgentErrorMessage(agentName: string, profile: string, code: AgentErrorEvent['code'], detail?: string): string {
+function buildAgentErrorMessage(agentName: string, profile: string, detail?: string): string {
     const safeDetail = sanitizeAgentErrorDetail(detail)
-    const base = code === 'PROFILE_GATEWAY_NOT_READY'
-        ? `⚠️ @${agentName} cannot reply because profile gateway "${profile}" is not ready.`
-        : `⚠️ @${agentName} could not reply because profile gateway "${profile}" failed during dispatch.`
+    const base = `⚠️ @${agentName} could not reply because profile runtime "${profile}" failed during dispatch.`
     return safeDetail ? `${base} ${safeDetail}` : base
 }
 
@@ -888,12 +891,7 @@ export class AgentClients {
      */
     async processMentions(roomId: string, msg: MentionMessage): Promise<void> {
         const agents = this.getAgents(roomId)
-        const senderName = msg.senderName.toLowerCase()
-
-        const mentioned = agents.filter(a => (
-            a.name.toLowerCase() !== senderName &&
-            isAgentMentioned(msg.content, a.name)
-        ))
+        const mentioned = resolveMentionTargets(agents, msg.content, msg.senderId)
         if (mentioned.length === 0) return
 
         logger.debug(`[AgentClients] ${mentioned.map(a => a.name).join(', ')} mentioned by ${msg.senderName}`)
@@ -935,15 +933,15 @@ export class AgentClients {
         try {
             await agent.replyToMention(roomId, msg, onStatus)
         } catch (err: any) {
-            const detail = sanitizeAgentErrorDetail(err?.message) || 'Gateway request failed'
+            const detail = sanitizeAgentErrorDetail(err?.message) || 'Agent runtime request failed'
             logger.error(`[AgentClients] error processing mention for ${agent.name}: ${detail}`)
             this._agentErrorHandler?.({
                 roomId,
                 agentName: agent.name,
                 profile: agent.profile,
-                code: 'PROFILE_GATEWAY_DISPATCH_FAILED',
+                code: 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED',
                 detail,
-                message: buildAgentErrorMessage(agent.name, agent.profile, 'PROFILE_GATEWAY_DISPATCH_FAILED', detail),
+                message: buildAgentErrorMessage(agent.name, agent.profile, detail),
             })
         } finally {
             this._processingRooms.delete(agentKey)
@@ -969,10 +967,4 @@ export class AgentClients {
 
 function nextMentionDepth(msg: MentionMessage): number {
     return Math.max(0, msg.mentionDepth || 0) + 1
-}
-
-function isAgentMentioned(content: string, agentName: string): boolean {
-    const escaped = agentName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const pattern = new RegExp(`@${escaped}(?=$|\\s|[.,!?;:，。！？；：])`, 'i')
-    return pattern.test(content)
 }
