@@ -112,7 +112,7 @@ onMounted(() => {
 <template>
   <div class="profile-selector">
     <div class="selector-label">{{ t('sidebar.profiles') }}</div>
-    <div class="profile-display" data-testid="profile-selector-display" @click="openProfileModal">
+    <div class="profile-display" data-testid="profile-selector-select" @click="openProfileModal">
       <span class="profile-avatar" v-html="avatarSvg" />
       <span class="profile-name">{{ displayName }}</span>
     </div>
