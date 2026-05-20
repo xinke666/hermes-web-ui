@@ -224,9 +224,22 @@ async function buildRuntimeStatus(profile: HermesProfile | string, bridgeState?:
   const bridge = bridgeState || await readBridgeWorkers()
   let gateway: { running: boolean; profile: string; error?: string }
   if (typeof profile !== 'string' && profile.gatewayStatus !== undefined) {
-    gateway = {
-      running: gatewayStatusLooksRunning(profile.gatewayStatus),
-      profile: name,
+    const profileListRunning = gatewayStatusLooksRunning(profile.gatewayStatus)
+    if (profileListRunning) {
+      gateway = {
+        running: true,
+        profile: name,
+      }
+    } else {
+      try {
+        gateway = await getGatewayRuntimeStatusForProfile(name)
+      } catch (err: any) {
+        gateway = {
+          running: false,
+          profile: name,
+          error: err?.message || 'Gateway status check failed',
+        }
+      }
     }
   } else {
     try {

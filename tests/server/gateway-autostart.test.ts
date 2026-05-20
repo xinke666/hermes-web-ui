@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import {
   gatewayStatusLooksRuntimeLocked,
   gatewayStatusLooksRunning,
+  gatewayStateLooksRunningForProfile,
   parseGatewayStatusesFromProfileListOutput,
   shouldUseManagedGatewayRun,
+  shouldUseManagedGatewayRunForAutostart,
 } from '../../packages/server/src/services/hermes/gateway-autostart'
 
 describe('gateway autostart status parsing', () => {
@@ -42,9 +47,24 @@ describe('gateway autostart status parsing', () => {
     process.env.HERMES_WEB_UI_MANAGED_GATEWAY = '1'
     try {
       expect(shouldUseManagedGatewayRun()).toBe(true)
+      expect(shouldUseManagedGatewayRunForAutostart()).toBe(true)
     } finally {
       if (previous === undefined) delete process.env.HERMES_WEB_UI_MANAGED_GATEWAY
       else process.env.HERMES_WEB_UI_MANAGED_GATEWAY = previous
+    }
+  })
+
+  it('detects managed gateway state files with a live pid', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-gateway-state-'))
+    try {
+      writeFileSync(
+        join(dir, 'gateway_state.json'),
+        JSON.stringify({ pid: process.pid, gateway_state: 'running' }),
+        'utf-8',
+      )
+      expect(gatewayStateLooksRunningForProfile(dir)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })
