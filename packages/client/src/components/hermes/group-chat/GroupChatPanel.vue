@@ -158,7 +158,9 @@ function extractApiErrorMessage(err: any): string {
     if (jsonStart >= 0) {
         try {
             const parsed = JSON.parse(raw.slice(jsonStart))
-            if (parsed?.code === 'PROFILE_AGENT_CONNECT_FAILED' && parsed?.error) return parsed.error
+            if (parsed?.code === 'PROFILE_AGENT_CONNECT_FAILED' && parsed?.error) {
+                return parsed.reason ? `${parsed.error}: ${parsed.reason}` : parsed.error
+            }
             if (parsed?.error) return parsed.error
         } catch { /* ignore */ }
     }

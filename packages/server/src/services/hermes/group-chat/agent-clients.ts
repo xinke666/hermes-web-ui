@@ -259,7 +259,7 @@ class AgentClient {
         }
     }
 
-    // ─── Hermes Gateway Integration ────────────────────────────
+    // ─── Agent Runtime Dispatch ────────────────────────────────
 
     /**
      * Handle an @mention from the server side.
@@ -272,6 +272,7 @@ class AgentClient {
         onStatus?: (status: 'compressing' | 'replying' | 'ready') => void,
     ): Promise<void> {
         logger.debug(`[AgentClients] ${this.name} mentioned by ${msg.senderName}: "${msg.content.slice(0, 50)}"`)
+        let activeStreamMessageId: string | null = null
         try {
             // Notify room that agent is typing
             this.startTyping(roomId)
@@ -363,6 +364,7 @@ class AgentClient {
             )
 
             this.emitMessageStreamStart(roomId, streamMessageId)
+            activeStreamMessageId = streamMessageId
             for await (const chunk of bridge.streamOutput(started.run_id, { timeoutMs: 120000 })) {
                 lastChunk = chunk
                 reasoningContent += await this.recordBridgeEvents(roomId, chunk, () => streamMessageId, async () => {
@@ -378,9 +380,11 @@ class AgentClient {
                         currentContent = ''
                     }
                     this.emitMessageStreamEnd(roomId, toolBaseId)
+                    activeStreamMessageId = null
                     partIndex += 1
                     streamMessageId = groupMessagePartId(runMessageId, partIndex)
                     this.emitMessageStreamStart(roomId, streamMessageId)
+                    activeStreamMessageId = streamMessageId
                     return toolBaseId
                 })
                 if (chunk.delta) {
@@ -395,6 +399,7 @@ class AgentClient {
                 logger.error(`[AgentClients] ${this.name}: bridge response failed: ${detail}`)
                 this.emitAgentError(roomId, 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED', detail)
                 this.emitMessageStreamEnd(roomId, streamMessageId)
+                activeStreamMessageId = null
                 this.safeStopTyping(roomId)
                 onStatus?.('ready')
                 return
@@ -415,15 +420,25 @@ class AgentClient {
                     reasoning_content: reasoningContent || null,
                 })
                 this.emitMessageStreamEnd(roomId, streamMessageId)
+                activeStreamMessageId = null
                 onStatus?.('ready')
                 return
             }
             logger.warn(`[AgentClients] ${this.name}: bridge response completed without content`)
             this.emitAgentError(roomId, 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED', 'Agent runtime response completed without content')
             this.emitMessageStreamEnd(roomId, streamMessageId)
+            activeStreamMessageId = null
             this.safeStopTyping(roomId)
             onStatus?.('ready')
         } catch (err: any) {
+            if (activeStreamMessageId) {
+                try {
+                    this.emitMessageStreamEnd(roomId, activeStreamMessageId)
+                } catch (streamErr: any) {
+                    logger.debug(`[AgentClients] ${this.name}: failed to close stream after runtime error: ${streamErr?.message || streamErr}`)
+                }
+                activeStreamMessageId = null
+            }
             const detail = sanitizeAgentErrorDetail(err?.message) || 'Agent runtime request failed'
             logger.error(`[AgentClients] ${this.name}: error handling message: ${detail}`)
             this.emitAgentError(roomId, 'PROFILE_AGENT_RUNTIME_DISPATCH_FAILED', detail)
