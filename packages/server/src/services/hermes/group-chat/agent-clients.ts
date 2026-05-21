@@ -190,9 +190,9 @@ class AgentClient {
         this.socket!.emit('stop_typing', { roomId })
     }
 
-    emitContextStatus(roomId: string, status: 'compressing' | 'replying' | 'ready'): void {
+    emitContextStatus(roomId: string, status: 'compressing' | 'replying' | 'ready', extra?: Record<string, unknown>): void {
         this.ensureConnected()
-        this.socket!.emit('context_status', { roomId, agentName: this.name, status })
+        this.socket!.emit('context_status', { roomId, agentName: this.name, status, ...extra })
     }
 
     emitApprovalRequested(roomId: string, payload: Record<string, unknown>): void {
@@ -261,7 +261,7 @@ class AgentClient {
     async replyToMention(
         roomId: string,
         msg: MentionMessage,
-        onStatus?: (status: 'compressing' | 'replying' | 'ready') => void,
+        onStatus?: (status: 'compressing' | 'replying' | 'ready', extra?: Record<string, unknown>) => void,
     ): Promise<void> {
         logger.debug(`[AgentClients] ${this.name} mentioned by ${msg.senderName}: "${msg.content.slice(0, 50)}"`)
         const runMessageId = groupMessageId(roomId, this.profile, this.name)
@@ -278,6 +278,9 @@ class AgentClient {
             // Build compressed context if context engine is available
             let conversationHistory: Array<{ role: string; content: string }> = []
             let instructions: string | undefined
+            const bridge = new AgentBridgeClient()
+            const sessionSeed = String(this.storage?.getRoom?.(roomId)?.sessionSeed || '0')
+            const sessionId = groupBridgeSessionId(roomId, this.profile, this.name, sessionSeed)
 
             if (this.contextEngine && this.storage) {
                 try {
@@ -310,9 +313,32 @@ class AgentClient {
                         currentMessage: msg,
                         compression,
                         profile: this.profile,
+                        contextTokenEstimator: async (history: Array<{ role: 'user' | 'assistant'; content: string }>, estimateInstructions: string) => {
+                            const estimate = await bridge.contextEstimate(
+                                sessionId,
+                                history,
+                                estimateInstructions,
+                                this.profile,
+                            )
+                            logger.info({
+                                roomId,
+                                agentName: this.name,
+                                profile: this.profile,
+                                sessionId,
+                                messages: estimate.message_count,
+                                toolCount: estimate.tool_count,
+                                systemPromptChars: estimate.system_prompt_chars,
+                                fullContextTokens: estimate.token_count,
+                            }, '[GroupChat] full context estimate')
+                            return estimate.token_count
+                        },
                     })
                     conversationHistory = ctx.conversationHistory
                     instructions = ctx.instructions
+                    if (typeof ctx.meta.contextTokenEstimate === 'number' && Number.isFinite(ctx.meta.contextTokenEstimate)) {
+                        this.storage.updateRoomTotalTokens?.(roomId, ctx.meta.contextTokenEstimate)
+                        onStatus?.('replying', { totalTokens: ctx.meta.contextTokenEstimate })
+                    }
                     logger.debug(`[AgentClients] ${this.name}: context built — historyLen=${conversationHistory.length}, meta=%j`, ctx.meta)
                     onStatus?.('replying')
                 } catch (err: any) {
@@ -339,9 +365,6 @@ class AgentClient {
             const bridgeInput: AgentBridgeMessage = isContentBlockArray(input)
                 ? await convertContentBlocksForAgent(input)
                 : input
-            const bridge = new AgentBridgeClient()
-            const sessionSeed = String(this.storage?.getRoom?.(roomId)?.sessionSeed || '0')
-            const sessionId = groupBridgeSessionId(roomId, this.profile, this.name, sessionSeed)
             const flushedAssistantParts = new Set<string>()
             let lastChunk: AgentBridgeOutput | null = null
             const started = await bridge.chat(
@@ -897,8 +920,8 @@ export class AgentClients {
         }
 
         this._processingRooms.add(agentKey)
-        const onStatus = (status: 'compressing' | 'replying' | 'ready') => {
-            agent.emitContextStatus(roomId, status)
+        const onStatus = (status: 'compressing' | 'replying' | 'ready', extra?: Record<string, unknown>) => {
+            agent.emitContextStatus(roomId, status, extra)
             logger.debug(`[AgentClients] room ${roomId} agent ${agent.name} status: ${status}`)
         }
 
